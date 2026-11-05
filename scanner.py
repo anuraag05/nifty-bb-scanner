@@ -11,6 +11,8 @@ Usage examples:
     python scanner.py -t 1d --signal cross_above_upper
     python scanner.py -t 5m --symbols my_list.txt --csv out.csv
     python scanner.py -t 1h --include-forming
+    python scanner.py -t 15m --scan ttl      (TTL entries / stops)
+    python scanner.py -t 15m --scan combo    (BB upper + buy entry, BB lower + sell entry)
     python scanner.py -t 15m --universe "Nifty 200"   (top 200 by market cap)
     python scanner.py -t 5m --source dhan      (needs DHAN_CLIENT_ID / DHAN_ACCESS_TOKEN env vars)
 """
@@ -20,6 +22,7 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import yfinance as yf
 
@@ -45,6 +48,41 @@ SIGNALS = [
     "cross_above_mid",    # crossed above the 20 EMA
     "cross_below_mid",    # crossed below the 20 EMA
 ]
+
+TTL_SIGNALS = [
+    "buy_entry",       # TTL BUY entry on the bar
+    "sell_entry",      # TTL SELL entry on the bar
+    "buy_stop_hit",    # long trailing stop hit
+    "sell_stop_hit",   # short trailing stop hit
+]
+COMBO_SIGNALS = [
+    "combo_buy",       # TTL buy entry AND close above the upper Bollinger Band
+    "combo_sell",      # TTL sell entry AND close below the lower Bollinger Band
+]
+MODES = {
+    "bb": ("Bollinger Bands", SIGNALS, ["cross_above_upper", "cross_below_lower"]),
+    "ttl": ("TTL (RSI / EMA trailing stop)", TTL_SIGNALS, ["buy_entry", "sell_entry"]),
+    "combo": ("BB + TTL combo", COMBO_SIGNALS, ["combo_buy", "combo_sell"]),
+}
+
+_BUY_SIGNALS = {"buy_entry", "combo_buy", "cross_above_upper", "above_upper", "cross_above_mid"}
+_SELL_SIGNALS = {"sell_entry", "combo_sell", "cross_below_lower", "below_lower", "cross_below_mid"}
+
+
+def side_of(signals: str) -> str:
+    """BUY / SELL / EXIT (a stop was hit, nothing new) / '' for a comma separated signal string."""
+    sig = set(filter(None, signals.split(",")))
+    b, s_ = bool(sig & _BUY_SIGNALS), bool(sig & _SELL_SIGNALS)
+    if b and not s_:
+        return "BUY"
+    if s_ and not b:
+        return "SELL"
+    if b and s_:
+        return "BUY/SELL"
+    if sig & {"buy_stop_hit", "sell_stop_hit"}:
+        return "EXIT"
+    return ""
+
 
 DEFAULT_SYMBOL_FILE = Path(__file__).with_name("nifty50.txt")
 
@@ -169,9 +207,21 @@ def _yahoo_batch(symbols: list[str], tf: str) -> dict[str, pd.DataFrame]:
     return out
 
 
+def _recent(series: pd.Series, lookback: int) -> int | None:
+    """Bars ago (0 = last bar) of the most recent True in the last `lookback` bars, else None."""
+    tail = series.iloc[-lookback:].to_numpy()
+    hits = [i for i, v in enumerate(tail) if v]
+    return (len(tail) - 1 - hits[-1]) if hits else None
+
+
 def scan(symbols: list[str], tf: str, include_forming: bool, data: dict | None = None,
-         source: str = "yahoo", client_id: str = "", token: str = "", progress=None) -> pd.DataFrame:
+         source: str = "yahoo", client_id: str = "", token: str = "", progress=None,
+         mode: str = "bb", lookback: int = 1) -> pd.DataFrame:
+    """mode: 'bb' Bollinger signals, 'ttl' TTL entries/stops, 'combo' TTL entry that is also outside the BB.
+    lookback: for ttl/combo, how many of the latest closed bars may contain the signal (1 = last bar only)."""
+    import ttl
     _, _, bar_len = TIMEFRAMES[tf]
+    lookback = max(1, int(lookback))
     if data is None:
         data = download(symbols, tf, source, client_id, token, progress)
     rows = []
@@ -180,24 +230,52 @@ def scan(symbols: list[str], tf: str, include_forming: bool, data: dict | None =
             continue
         if not include_forming:
             df = drop_forming_bar(df, bar_len, tf)
-        close = df["Close"].dropna()
-        if len(close) < EMA_LEN + 2:
+        df = df.dropna(subset=["Close"])
+        close = df["Close"]
+        if len(close) < max(EMA_LEN + 2, 30 if mode != "bb" else 0):
             continue
         bb = bollinger(close)
         last = bb.iloc[-1]
-        width_pct = (last.upper - last.lower) / last.mid * 100
-        rows.append(
-            {
-                "symbol": sym.replace(".NS", ""),
-                "time": close.index[-1],
-                "close": round(last.close, 2),
-                "ema20": round(last.mid, 2),
-                "upper": round(last.upper, 2),
-                "lower": round(last.lower, 2),
-                "band_width_%": round(width_pct, 2),
-                "signals": ",".join(classify(bb)),
-            }
-        )
+        row = {"symbol": sym.replace(".NS", ""), "time": close.index[-1], "close": round(last.close, 2)}
+
+        if mode == "bb":
+            width_pct = (last.upper - last.lower) / last.mid * 100
+            row.update({
+                "ema20": round(last.mid, 2), "upper": round(last.upper, 2), "lower": round(last.lower, 2),
+                "band_width_%": round(width_pct, 2), "signals": ",".join(classify(bb)),
+            })
+        else:
+            t = ttl.compute(df)
+            lt = t.iloc[-1]
+            pos = {1: "BUY", -1: "SELL", 0: "-"}[int(lt.position)]
+            sl = lt.buy_sl if lt.position == 1 else lt.sell_sl if lt.position == -1 else np.nan
+            fired, ago = [], []
+            if mode == "ttl":
+                for name, col in (("buy_entry", "buy_entry"), ("sell_entry", "sell_entry"),
+                                  ("buy_stop_hit", "buy_exit"), ("sell_stop_hit", "sell_exit")):
+                    k = _recent(t[col], lookback)
+                    if k is not None:
+                        fired.append(name)
+                        ago.append(k)
+            else:  # combo: the entry bar itself must be outside the band
+                above = t["buy_entry"] & (bb["close"] > bb["upper"])
+                below = t["sell_entry"] & (bb["close"] < bb["lower"])
+                for name, series in (("combo_buy", above), ("combo_sell", below)):
+                    k = _recent(series, lookback)
+                    if k is not None:
+                        fired.append(name)
+                        ago.append(k)
+                row.update({"upper": round(last.upper, 2), "lower": round(last.lower, 2)})
+            row.update({
+                "rsi": round(float(lt.rsi), 1) if pd.notna(lt.rsi) else np.nan,
+                "rsi_ema": round(float(lt.rsi_ema), 1) if pd.notna(lt.rsi_ema) else np.nan,
+                "position": pos,
+                "stop_loss": round(float(sl), 2) if pd.notna(sl) else np.nan,
+                "signals": ",".join(fired),
+                "bars_ago": min(ago) if ago else np.nan,
+            })
+        row["side"] = side_of(row["signals"])
+        rows.append(row)
     missing = sorted(s.replace(".NS", "") for s in set(symbols) - set(data))
     if missing:
         shown = ", ".join(missing[:15]) + (f" ... (+{len(missing) - 15} more)" if len(missing) > 15 else "")
@@ -210,8 +288,13 @@ def main():
     p = argparse.ArgumentParser(description="Nifty Bollinger Band (20 EMA, 1 SD) scanner")
     p.add_argument("-t", "--timeframe", choices=TIMEFRAMES, default=None,
                    help="1m, 5m, 15m, 1h or 1d (prompted if omitted)")
-    p.add_argument("-s", "--signal", choices=SIGNALS, action="append",
-                   help="only show these signals (repeatable). Default: show any signal")
+    p.add_argument("--scan", choices=list(MODES), default="bb",
+                   help="bb = Bollinger Bands (default), ttl = RSI/EMA trailing-stop entries and stops, "
+                        "combo = TTL buy entry above upper band / TTL sell entry below lower band")
+    p.add_argument("--lookback", type=int, default=1,
+                   help="ttl/combo: accept a signal from any of the last N closed bars (default 1 = last bar only)")
+    p.add_argument("-s", "--signal", choices=SIGNALS + TTL_SIGNALS + COMBO_SIGNALS, action="append",
+                   help="only show these signals (repeatable). Default: show any signal of the chosen scan")
     p.add_argument("--universe", default=None,
                    help="NSE index list to scan, e.g. 'Nifty 500', 'Nifty 200', 'Nifty 100', 'Nifty 50', 'F&O' "
                         "(default: nifty50.txt). 'Nifty 500' = top 500 by market cap")
@@ -241,8 +324,12 @@ def main():
         symbols = [n + ".NS" for n in names]
     else:
         symbols = load_symbols(args.symbols)
-    print(f"[{args.source}] Scanning {len(symbols)} symbols on {tf} | BB(EMA {EMA_LEN}, {STD_MULT} SD) ...")
-    res = scan(symbols, tf, args.include_forming, source=args.source)
+    bad = [x for x in (args.signal or []) if x not in MODES[args.scan][1]]
+    if bad:
+        sys.exit(f"Signal(s) {', '.join(bad)} do not belong to --scan {args.scan}. Options: {', '.join(MODES[args.scan][1])}")
+    print(f"[{args.source}] {MODES[args.scan][0]} scan of {len(symbols)} symbols on {tf} "
+          f"| BB(EMA {EMA_LEN}, {STD_MULT} SD) ...")
+    res = scan(symbols, tf, args.include_forming, source=args.source, mode=args.scan, lookback=args.lookback)
     if res.empty:
         sys.exit("No data returned (market closed / rate limited / bad symbols?).")
 
@@ -258,8 +345,13 @@ def main():
         return
 
     res = res.sort_values("symbol").reset_index(drop=True)
-    with pd.option_context("display.width", 200, "display.max_columns", None):
-        print(res.to_string(index=False))
+    colours = {"BUY": "\033[92m", "SELL": "\033[91m", "EXIT": "\033[93m", "BUY/SELL": "\033[95m"}
+    with pd.option_context("display.width", 220, "display.max_columns", None):
+        lines = res.to_string(index=False).splitlines()
+        print(lines[0])
+        for line, side in zip(lines[1:], res["side"]):
+            c = colours.get(side, "")
+            print(f"{c}{line}\033[0m" if c and sys.stdout.isatty() else line)
     print(f"\n{len(res)} result(s).")
     if args.csv:
         res.to_csv(args.csv, index=False)

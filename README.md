@@ -13,7 +13,20 @@ pip install -r requirements.txt
 streamlit run app.py          # or double-click run_app.bat on Windows
 ```
 
-Pick the data source, timeframe and signals in the sidebar, then click **Scan**.
+Pick the data source, scan type, timeframe and signals in the sidebar, then click **Scan**.
+
+### Scan types
+| Scan | What it finds |
+|---|---|
+| **Bollinger Bands** | 20 EMA midline, ±1 SD bands: breakouts / breakdowns / EMA crosses |
+| **TTL (RSI / EMA trailing stop)** | Your TradingView "Tiger TTL" script: RSI(9) vs its EMA(5) gives BUY/SELL, with a 3-bar trailing stop. Signals: `buy_entry`, `sell_entry`, `buy_stop_hit`, `sell_stop_hit` |
+| **BB + TTL combo** | `combo_buy` = TTL **buy entry** on a candle that closed **above the BB upper band**; `combo_sell` = TTL **sell entry** on a candle that closed **below the BB lower band** |
+
+"Signal within last N candles" (default 1 = the latest closed candle) also catches signals from the last few candles; the `bars_ago` column says how old each one is.
+
+Colours: 🟢 green = BUY, 🔴 red = SELL, 🟠 orange = stop hit, 🟣 purple = both. A strong tint is a fresh signal; in TTL scans with "show all" a light tint marks stocks already in a BUY/SELL trade (see the `position` and `stop_loss` columns). The chart shows the trailing stop (BUY SL red, SELL SL green, as in the Pine script), entry/stop markers and the RSI panel.
+
+The TTL logic is a line-by-line port of `pinescript/tiger_ttl.pine` (`ttl.py`). Position and stops depend on history, so a short data window can differ slightly from the TradingView chart.
 
 ### Host it free (no command line)
 1. Open https://share.streamlit.io and sign in with GitHub.
@@ -60,6 +73,8 @@ pip install -r requirements.txt
 ```bash
 python scanner.py -t 15m                          # any signal, 15-minute candles (Nifty 50 file)
 python scanner.py -t 15m --universe "Nifty 200"   # top 200 by market cap
+python scanner.py -t 15m --scan ttl               # TTL entries (add --lookback 3 for the last 3 candles)
+python scanner.py -t 15m --scan combo             # BB upper + buy entry / BB lower + sell entry
 python scanner.py -t 15m --universe "F&O"         # all F&O stocks (quote it in the terminal)
 python scanner.py -t 1d -s cross_above_upper      # daily breakouts only
 python scanner.py -t 5m -s below_lower -s cross_below_lower
@@ -70,6 +85,8 @@ python scanner.py                                 # prompts for timeframe
 | Option | Meaning |
 |---|---|
 | `-t, --timeframe` | `1m`, `5m`, `15m`, `1h`, `1d` |
+| `--scan` | `bb` (default), `ttl` or `combo` |
+| `--lookback N` | ttl/combo: accept signals from the last N candles |
 | `-s, --signal` | Filter (repeatable). See signals below |
 | `--universe` | `Nifty 500`, `Nifty 200`, `Nifty 100`, `Nifty 50`, `F&O`, ... (downloads the NSE list) |
 | `--source` | `yahoo` (default) or `dhan` |

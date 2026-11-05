@@ -12,8 +12,10 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from plotly.subplots import make_subplots
 
 import scanner
+import ttl
 import universe
 
 st.set_page_config(page_title="Nifty BB Scanner", page_icon="📈", layout="wide")
@@ -87,8 +89,9 @@ def refresh_timer(enabled: bool, minutes: int, only_market_hours: bool):
 
 
 # ------------------------------------------------------------------ sidebar
-st.title("📈 Nifty Bollinger Band Scanner")
-st.caption(f"Bollinger Bands: {scanner.EMA_LEN} EMA midline, ±{scanner.STD_MULT:g} standard deviation · data: Dhan or Yahoo Finance")
+st.title("📈 Nifty Scanner")
+st.caption(f"Bollinger Bands ({scanner.EMA_LEN} EMA, ±{scanner.STD_MULT:g} SD) and Tiger TTL (RSI {ttl.RSI_LEN} / EMA {ttl.RSI_EMA_LEN}, "
+           f"{ttl.STOP_LEN}-bar trailing stop) · data: Dhan or Yahoo Finance")
 
 with st.sidebar:
     st.header("Settings")
@@ -100,12 +103,21 @@ with st.sidebar:
                               help="Tokens expire (24 h for console-generated ones). Paste a fresh one when needed. "
                                    "It is only used for this session and is not saved.")
     tf = st.selectbox("Timeframe", list(scanner.TIMEFRAMES), index=2)
+    mode = st.selectbox("Scan type", list(scanner.MODES), format_func=lambda k: scanner.MODES[k][0],
+                        help="Bollinger Bands, the TTL RSI/EMA trailing-stop system, or both together "
+                             "(TTL buy entry above the BB upper band / TTL sell entry below the BB lower band).")
     signals = st.multiselect(
         "Signals to show",
-        scanner.SIGNALS,
-        default=["cross_above_upper", "cross_below_lower"],
+        scanner.MODES[mode][1],
+        default=scanner.MODES[mode][2],
+        key=f"signals_{mode}",
         help="Leave empty to show every stock that has any signal.",
     )
+    lookback = 1
+    if mode != "bb":
+        lookback = st.number_input("Signal within last N candles", min_value=1, max_value=20, value=1,
+                                   help="1 = only the latest closed candle. Raise it to also catch signals "
+                                        "from the last few candles.")
     show_all = st.checkbox("Show all stocks (ignore signal filter)", value=False)
     include_forming = st.checkbox("Include forming (unclosed) candle", value=False)
     uni_names = list(universe.UNIVERSES) + ["Upload CSV", "Custom list"]
@@ -172,11 +184,11 @@ if run:
     bar.empty()
     st.session_state["last_scan"] = time.time()  # also on failure, so retries are spaced out
     if not failed:
-        res = scanner.scan(symbols, tf, include_forming, data=data)
-        st.session_state["result"] = (res, data, tf, signals, show_all, symbols)
+        res = scanner.scan(symbols, tf, include_forming, data=data, mode=mode, lookback=int(lookback))
+        st.session_state["result"] = (res, data, tf, signals, show_all, symbols, mode)
         st.session_state["scan_time"] = datetime.now(IST).strftime("%d %b %H:%M:%S IST")
 
-res, data, tf_used, signals_used, show_all_used, symbols_used = st.session_state["result"]
+res, data, tf_used, signals_used, show_all_used, symbols_used, mode_used = st.session_state["result"]
 
 if res.empty:
     st.error("No data returned. The market may be closed for this timeframe, Yahoo may be rate limiting, "
@@ -206,17 +218,28 @@ c3.metric("Matches", len(view))
 if view.empty:
     st.success("No stocks match the selected signals right now.")
 else:
+    # strong tint = fresh signal, light tint = already in a TTL trade
+    SIDE_BG = {"BUY": "rgba(46,160,67,0.35)", "SELL": "rgba(218,54,51,0.35)",
+               "EXIT": "rgba(240,136,62,0.35)", "BUY/SELL": "rgba(163,113,247,0.35)"}
+    POS_BG = {"BUY": "rgba(46,160,67,0.10)", "SELL": "rgba(218,54,51,0.10)"}
+    SIDE_FG = {"BUY": "#2ea043", "SELL": "#da3633", "EXIT": "#f0883e", "BUY/SELL": "#a371f7"}
+
     def colour(row):
-        sig = row["signals"]
-        if "cross_above_upper" in sig or "above_upper" in sig:
-            return ["background-color: rgba(46,160,67,0.18)"] * len(row)
-        if "cross_below_lower" in sig or "below_lower" in sig:
-            return ["background-color: rgba(218,54,51,0.18)"] * len(row)
-        return [""] * len(row)
+        side = row.get("side", "")
+        bg = SIDE_BG.get(side) or POS_BG.get(row.get("position", ""), "")
+        out = []
+        for col in row.index:
+            css = f"background-color: {bg};" if bg else ""
+            if col == "side" and side:
+                css += f" color: {SIDE_FG[side]}; font-weight: 700;"
+            out.append(css)
+        return out
 
     st.dataframe(view.style.apply(colour, axis=1), width="stretch", hide_index=True)
+    st.caption("🟢 BUY  🔴 SELL  🟠 stop hit (EXIT)  🟣 both. Strong colour = signal on the scanned candle(s); "
+               "light tint (TTL scans, 'show all') = already in a BUY/SELL trade.")
     st.download_button("⬇️ Download CSV", view.to_csv(index=False).encode(),
-                       file_name=f"nifty_bb_{tf_used}.csv", mime="text/csv")
+                       file_name=f"nifty_{mode_used}_{tf_used}.csv", mime="text/csv")
 
 # ------------------------------------------------------------------ chart
 st.subheader("Chart")
@@ -232,14 +255,40 @@ if df is not None and "Close" in df.columns:
     tail = df.tail(120)
     bbt = bb.loc[tail.index]
     x = [str(i) for i in tail.index]  # category axis: no gaps for market-closed hours
-    fig = go.Figure()
+    show_ttl = mode_used != "bb"
+    if show_ttl:
+        t = ttl.compute(df).loc[tail.index]
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.72, 0.28], vertical_spacing=0.03)
+    else:
+        fig = make_subplots(rows=1, cols=1)
     fig.add_trace(go.Candlestick(x=x, open=tail["Open"], high=tail["High"], low=tail["Low"],
-                                 close=tail["Close"], name="Price"))
-    fig.add_trace(go.Scatter(x=x, y=bbt["upper"], name="Upper (+1 SD)", line=dict(width=1.3, color="#2ea043")))
-    fig.add_trace(go.Scatter(x=x, y=bbt["mid"], name="EMA 20", line=dict(width=1.3, color="#d29922")))
-    fig.add_trace(go.Scatter(x=x, y=bbt["lower"], name="Lower (-1 SD)", line=dict(width=1.3, color="#da3633")))
-    fig.update_layout(height=520, xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=30, b=10),
-                      xaxis=dict(type="category", nticks=10), legend=dict(orientation="h"))
+                                 close=tail["Close"], name="Price"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x, y=bbt["upper"], name="Upper (+1 SD)", line=dict(width=1.3, color="#2ea043")), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x, y=bbt["mid"], name="EMA 20", line=dict(width=1.3, color="#d29922")), row=1, col=1)
+    fig.add_trace(go.Scatter(x=x, y=bbt["lower"], name="Lower (-1 SD)", line=dict(width=1.3, color="#da3633")), row=1, col=1)
+    if show_ttl:
+        # same colours as the Pine script: BUY stop line red, SELL stop line green
+        fig.add_trace(go.Scatter(x=x, y=t["buy_sl"], name="BUY SL", mode="lines", connectgaps=False,
+                                 line=dict(width=2.5, color="#da3633", shape="hv")), row=1, col=1)
+        fig.add_trace(go.Scatter(x=x, y=t["sell_sl"], name="SELL SL", mode="lines", connectgaps=False,
+                                 line=dict(width=2.5, color="#2ea043", shape="hv")), row=1, col=1)
+        xa = pd.Series(x, index=tail.index)
+        for col, name, ycol, sym, colr, off in (
+                ("buy_entry", "BUY", "Low", "triangle-up", "#00c853", -1), ("sell_entry", "SELL", "High", "triangle-down", "#ff1744", 1),
+                ("buy_exit", "BUY SL hit", "Close", "x", "#f0883e", 0), ("sell_exit", "SELL SL hit", "Close", "x", "#f0883e", 0)):
+            m = t[col]
+            if m.any():
+                y = tail.loc[m, ycol] * (1 + off * 0.002)
+                fig.add_trace(go.Scatter(x=list(xa[m]), y=y, mode="markers", name=name,
+                                         marker=dict(symbol=sym, size=12, color=colr, line=dict(width=1, color="black"))),
+                              row=1, col=1)
+        fig.add_trace(go.Scatter(x=x, y=t["rsi"], name=f"RSI {ttl.RSI_LEN}", line=dict(width=1.5, color="#58a6ff")), row=2, col=1)
+        fig.add_trace(go.Scatter(x=x, y=t["rsi_ema"], name=f"EMA {ttl.RSI_EMA_LEN} of RSI", line=dict(width=1.5, color="#f0883e")), row=2, col=1)
+        fig.add_hline(y=50, line=dict(width=1, dash="dot", color="gray"), row=2, col=1)
+    fig.update_layout(height=640 if show_ttl else 520, xaxis_rangeslider_visible=False,
+                      margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h"))
+    fig.update_xaxes(type="category", nticks=10)
+    fig.update_xaxes(rangeslider_visible=False)
     st.plotly_chart(fig, width="stretch")
 
 st.caption("Data may be delayed or rate limited. Educational tool, not investment advice.")

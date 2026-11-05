@@ -1,0 +1,281 @@
+//@version=5
+indicator("Tiger TTL", overlay=true)
+
+// Reference copy of the TradingView script that scanner.py / ttl.py reproduce.
+// Only edits vs. the original: the two header lines above were added, and the stray
+// single "/" before the ALERTS banner was changed to "//" (it would not compile).
+
+//=====================================================================
+// ORIGINAL LOGIC (UNCHANGED)
+//=====================================================================
+
+lengthLR = input.int(9, minval=1, title="RL")
+lengthLM = input.int(5, minval=1, title="EL")
+
+lengthstop = input.int(3, minval=1, title="LS")
+
+lr = ta.rsi(close, lengthLR)
+lm = ta.ema(lr, lengthLM)
+
+
+// STATE BASED SIGNALS
+buy  = lr > lm
+sell = lr < lm
+
+
+plotshape(
+     buy ? 1 : na,
+     title="xBuy",
+     style=shape.labelup,
+     location=location.belowbar,
+     color=color.rgb(15,194,98),
+     text="B",
+     textcolor=color.black,
+     size=size.small,
+     display=display.none)
+
+
+plotshape(
+     sell ? 1 : na,
+     title="xSell",
+     style=shape.labeldown,
+     location=location.abovebar,
+     color=color.rgb(198,2,2),
+     text="S",
+     textcolor=color.black,
+     size=size.small,
+     display=display.none)
+
+
+bgcolor(
+     buy ? color.rgb(9,174,15,93) : na,
+     title="BUY BG")
+
+
+bgcolor(
+     sell ? color.rgb(212,10,10,93) : na,
+     title="SELL BG")
+
+
+// Stops
+buystop  = ta.lowest(lengthstop)///[1]
+sellstop = ta.highest(lengthstop)///[1]
+
+
+
+//=====================================================================
+// TRADE MANAGEMENT
+//=====================================================================
+
+
+var int position = 0
+// 0 = flat
+// 1 = BUY
+// -1 = SELL
+
+
+var float buySL  = na
+var float sellSL = na
+
+
+
+bool buyEntry  = false
+bool sellEntry = false
+
+bool buyExit   = false
+bool sellExit  = false
+
+
+
+//=====================================================================
+// UPDATE EXISTING POSITION
+//=====================================================================
+
+
+//-------------------------
+// BUY TRADE MANAGEMENT
+//-------------------------
+
+if position == 1
+
+    buySL := math.max(buySL, buystop)
+
+    if close < buySL
+
+        buyExit := true
+        position := 0
+        buySL := na
+
+
+
+//-------------------------
+// SELL TRADE MANAGEMENT
+//-------------------------
+
+if position == -1
+
+    sellSL := math.min(sellSL, sellstop)
+
+    if close > sellSL
+
+        sellExit := true
+        position := 0
+        sellSL := na
+
+
+
+//=====================================================================
+// ENTRY / REVERSAL LOGIC
+//=====================================================================
+
+
+//----------------------------------------------------
+// SAME BAR REVERSAL
+//----------------------------------------------------
+
+
+// BUY STOP HIT -> SELL
+if buyExit and sell
+
+    sellEntry := true
+    position := -1
+    sellSL := sellstop
+
+
+
+// SELL STOP HIT -> BUY
+if sellExit and buy
+
+    buyEntry := true
+    position := 1
+    buySL := buystop
+
+
+
+//----------------------------------------------------
+// NORMAL ENTRY
+//----------------------------------------------------
+
+if position == 0
+
+    if buy
+
+        buyEntry := true
+        position := 1
+        buySL := buystop
+
+
+    else if sell
+
+        sellEntry := true
+        position := -1
+        sellSL := sellstop
+
+
+
+
+//=====================================================================
+// TRAILING STOP PLOTS
+//=====================================================================
+
+plot(
+     position == 1 ? buySL : na,
+     color=color.red,
+     linewidth=3,
+     style=plot.style_steplinebr,
+     title="BUY SL")
+
+
+plot(
+     position == -1 ? sellSL : na,
+     color=color.green,
+     linewidth=3,
+     style=plot.style_steplinebr,
+     title="SELL SL")
+
+//=====================================================================
+// ALERTS
+//=====================================================================
+
+alertcondition(
+     buyEntry,
+     title="BUY ENTRY",
+     message="Tiger TTL : BUY ENTRY")
+
+
+alertcondition(
+     sellEntry,
+     title="SELL ENTRY",
+     message="Tiger TTL : SELL ENTRY")
+
+
+alertcondition(
+     buyExit,
+     title="BUY STOP HIT",
+     message="Tiger TTL : BUY STOP HIT")
+
+
+alertcondition(
+     sellExit,
+     title="SELL STOP HIT",
+     message="Tiger TTL : SELL STOP HIT")
+
+
+
+//=====================================================================
+// LABELS
+//=====================================================================
+
+atrSpace = ta.atr(14)
+
+
+
+if buyEntry
+
+    label.new(
+         bar_index,
+         low - atrSpace * 1.2,
+         "BUY",
+         style=label.style_label_up,
+         color=color.lime,
+         textcolor=color.black,
+         size=size.small)
+
+
+
+if sellEntry
+
+    label.new(
+         bar_index,
+         high + atrSpace * 1.2,
+         "SELL",
+         style=label.style_label_down,
+         color=color.red,
+         textcolor=color.white,
+         size=size.small)
+
+
+
+if buyExit
+
+    label.new(
+         bar_index,
+         low - atrSpace * 1.2,
+         "BUY SL",
+         style=label.style_label_up,
+         color=color.orange,
+         textcolor=color.black,
+         size=size.small)
+
+
+
+if sellExit
+
+    label.new(
+         bar_index,
+         high + atrSpace * 1.2,
+         "SELL SL",
+         style=label.style_label_down,
+         color=color.orange,
+         textcolor=color.black,
+         size=size.small)
