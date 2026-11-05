@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import scanner
+import universe
 
 st.set_page_config(page_title="Nifty BB Scanner", page_icon="📈", layout="wide")
 
@@ -17,16 +18,31 @@ st.set_page_config(page_title="Nifty BB Scanner", page_icon="📈", layout="wide
 CACHE_TTL = {"1m": 60, "5m": 120, "15m": 300, "1h": 600, "1d": 1800}
 
 
-@st.cache_data(show_spinner=False, ttl=3600)
-def fetch(symbols: tuple, tf: str, bucket: int, source: str, client_id: str, token: str):
-    # `bucket` changes with time so the cache expires per-timeframe
-    return scanner.download(list(symbols), tf, source, client_id, token)
+@st.cache_resource
+def _store() -> dict:
+    return {}
 
 
-def get_data(symbols: list[str], tf: str, source: str, client_id: str, token: str):
+@st.cache_data(show_spinner=False, ttl=6 * 3600)
+def load_universe(name: str):
+    return universe.load(name)
+
+
+def get_data(symbols: list[str], tf: str, source: str, client_id: str, token: str, progress=None):
+    """Fetch (or reuse recently fetched) candles. Cache lifetime depends on the timeframe."""
+    import hashlib
     import time
     bucket = int(time.time() // CACHE_TTL[tf])
-    return fetch(tuple(symbols), tf, bucket, source, client_id, token)
+    key = (hashlib.md5(",".join(symbols).encode()).hexdigest(), tf, bucket, source,
+           hashlib.md5(token.encode()).hexdigest() if token else "")
+    store = _store()
+    if key in store:
+        return store[key]
+    data = scanner.download(symbols, tf, source, client_id, token, progress)
+    for old in [k for k in store if k[2] != bucket or k[1] != tf][:]:
+        store.pop(old, None)  # drop stale entries to keep memory small
+    store[key] = data
+    return data
 
 
 def secret(name: str) -> str:
@@ -62,9 +78,17 @@ with st.sidebar:
     )
     show_all = st.checkbox("Show all stocks (ignore signal filter)", value=False)
     include_forming = st.checkbox("Include forming (unclosed) candle", value=False)
-    default_syms = "\n".join(scanner.load_symbols(scanner.DEFAULT_SYMBOL_FILE)).replace(".NS", "")
-    sym_text = st.text_area("Symbols (one per line)", value=default_syms, height=220,
-                            help="NSE symbols; .NS is added automatically.")
+    uni_names = list(universe.UNIVERSES) + ["Upload CSV", "Custom list"]
+    uni = st.selectbox("Stocks to scan", uni_names, index=0,
+                       help="Nifty 500 = NSE's official top 500 listed companies by market cap.")
+    custom_syms: list[str] = []
+    if uni == "Upload CSV":
+        up = st.file_uploader("CSV with a 'Symbol' column (or one symbol per line)", type=["csv", "txt"])
+        if up is not None:
+            custom_syms = universe.parse_symbols(up.getvalue().decode("utf-8", errors="ignore"))
+    elif uni == "Custom list":
+        txt = st.text_area("Symbols (one per line)", value="RELIANCE\nTCS\nINFY", height=160)
+        custom_syms = universe.parse_symbols(txt)
     run = st.button("🔍 Scan", type="primary", width="stretch")
 
 if "result" not in st.session_state and not run:
@@ -73,23 +97,35 @@ if "result" not in st.session_state and not run:
 
 # ------------------------------------------------------------------ scan
 if run:
-    symbols = []
-    for line in sym_text.splitlines():
-        s = line.strip().upper()
-        if s:
-            symbols.append(s if s.endswith(".NS") or s.startswith("^") else s + ".NS")
+    if uni in universe.UNIVERSES:
+        try:
+            names, note = load_universe(uni)
+        except Exception as e:
+            st.error(str(e))
+            st.stop()
+        st.session_state["universe_note"] = f"{uni}: {len(names)} stocks ({note})"
+    else:
+        names = custom_syms
+        st.session_state["universe_note"] = f"{uni}: {len(names)} stocks"
+    symbols = [n + ".NS" for n in names]
     if not symbols:
-        st.error("Add at least one symbol.")
+        st.error("No symbols to scan. Upload a CSV or enter some symbols.")
         st.stop()
     if source == "dhan" and not (client_id and token):
         st.error("Enter your Dhan client ID and access token in the sidebar (or choose Yahoo).")
         st.stop()
+    bar = st.progress(0.0, text=f"Fetching {len(symbols)} symbols on {tf} from {source.capitalize()}...")
+
+    def on_progress(done: int, total: int):
+        bar.progress(min(done / total, 1.0), text=f"Fetching {source.capitalize()} data: {done}/{total}")
+
     try:
-        with st.spinner(f"Fetching {len(symbols)} symbols on {tf} from {source.capitalize()}..."):
-            data = get_data(symbols, tf, source, client_id, token)
+        data = get_data(symbols, tf, source, client_id, token, on_progress)
     except Exception as e:  # bad/expired token, network problems, etc.
+        bar.empty()
         st.error(f"Data fetch failed: {e}")
         st.stop()
+    bar.empty()
     res = scanner.scan(symbols, tf, include_forming, data=data)
     st.session_state["result"] = (res, data, tf, signals, show_all, symbols)
 
@@ -100,9 +136,11 @@ if res.empty:
              "or the symbols are invalid. Try again in a minute or use the 1d timeframe.")
     st.stop()
 
+st.caption(st.session_state.get("universe_note", ""))
 missing = [s.replace(".NS", "") for s in symbols_used if s not in data]
 if missing:
-    st.warning("No data for: " + ", ".join(missing))
+    with st.expander(f"⚠️ No data for {len(missing)} symbols"):
+        st.write(", ".join(missing))
 
 view = res
 if not show_all_used:

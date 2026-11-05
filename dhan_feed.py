@@ -141,7 +141,7 @@ def fetch_one(security_id: str, tf: str, token: str, client_id: str) -> pd.DataF
     return _to_frame(_post("/charts/intraday", body, token, client_id))
 
 
-def download(symbols: list[str], tf: str, client_id: str = "", token: str = "") -> dict[str, pd.DataFrame]:
+def download(symbols: list[str], tf: str, client_id: str = "", token: str = "", progress=None) -> dict[str, pd.DataFrame]:
     """symbols are Yahoo-style ('RELIANCE.NS'); returns {same_symbol: DataFrame}."""
     if not client_id or not token:
         client_id, token = creds_from_env()
@@ -152,7 +152,10 @@ def download(symbols: list[str], tf: str, client_id: str = "", token: str = "") 
     ids = load_security_ids(bare)
     out = {}
     last_call = 0.0
-    for sym, bare_sym in zip(symbols, bare):
+    total = len(symbols)
+    for n, (sym, bare_sym) in enumerate(zip(symbols, bare), 1):
+        if progress:
+            progress(n, total)
         sid = ids.get(bare_sym)
         if sid is None:
             continue

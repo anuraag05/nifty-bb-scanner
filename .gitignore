@@ -7,3 +7,4 @@ venv/
 .env
 .streamlit/secrets.toml
 .dhan_scrip_master.csv
+.universe_cache/

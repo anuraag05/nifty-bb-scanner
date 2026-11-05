@@ -11,6 +11,7 @@ Usage examples:
     python scanner.py -t 1d --signal cross_above_upper
     python scanner.py -t 5m --symbols my_list.txt --csv out.csv
     python scanner.py -t 1h --include-forming
+    python scanner.py -t 15m --universe "Nifty 500"   (top 500 by market cap)
     python scanner.py -t 5m --source dhan      (needs DHAN_CLIENT_ID / DHAN_ACCESS_TOKEN env vars)
 """
 
@@ -113,15 +114,37 @@ def drop_forming_bar(df: pd.DataFrame, bar_len: timedelta, tf: str) -> pd.DataFr
 
 
 def download(symbols: list[str], tf: str, source: str = "yahoo",
-             client_id: str = "", token: str = "") -> dict[str, pd.DataFrame]:
-    """Fetch OHLC data from the chosen source ('yahoo' or 'dhan')."""
+             client_id: str = "", token: str = "", progress=None) -> dict[str, pd.DataFrame]:
+    """Fetch OHLC data from the chosen source ('yahoo' or 'dhan').
+    `progress(done, total)` is called as symbols complete (optional)."""
     if source == "dhan":
         import dhan_feed
-        return dhan_feed.download(symbols, tf, client_id=client_id, token=token)
-    return download_yahoo(symbols, tf)
+        return dhan_feed.download(symbols, tf, client_id=client_id, token=token, progress=progress)
+    return download_yahoo(symbols, tf, progress=progress)
 
 
-def download_yahoo(symbols: list[str], tf: str) -> dict[str, pd.DataFrame]:
+YAHOO_BATCH = 100  # keep batches modest so Yahoo doesn't rate-limit big universes
+
+
+def download_yahoo(symbols: list[str], tf: str, progress=None) -> dict[str, pd.DataFrame]:
+    import time
+    out: dict[str, pd.DataFrame] = {}
+    for i in range(0, len(symbols), YAHOO_BATCH):
+        batch = symbols[i:i + YAHOO_BATCH]
+        for attempt in range(2):
+            try:
+                out.update(_yahoo_batch(batch, tf))
+                break
+            except Exception:
+                time.sleep(2)
+        if progress:
+            progress(min(i + YAHOO_BATCH, len(symbols)), len(symbols))
+        if i + YAHOO_BATCH < len(symbols):
+            time.sleep(1)
+    return out
+
+
+def _yahoo_batch(symbols: list[str], tf: str) -> dict[str, pd.DataFrame]:
     interval, period, _ = TIMEFRAMES[tf]
     raw = yf.download(
         tickers=symbols,
@@ -147,10 +170,10 @@ def download_yahoo(symbols: list[str], tf: str) -> dict[str, pd.DataFrame]:
 
 
 def scan(symbols: list[str], tf: str, include_forming: bool, data: dict | None = None,
-         source: str = "yahoo", client_id: str = "", token: str = "") -> pd.DataFrame:
+         source: str = "yahoo", client_id: str = "", token: str = "", progress=None) -> pd.DataFrame:
     _, _, bar_len = TIMEFRAMES[tf]
     if data is None:
-        data = download(symbols, tf, source, client_id, token)
+        data = download(symbols, tf, source, client_id, token, progress)
     rows = []
     for sym, df in data.items():
         if "Close" not in df.columns:
@@ -175,9 +198,10 @@ def scan(symbols: list[str], tf: str, include_forming: bool, data: dict | None =
                 "signals": ",".join(classify(bb)),
             }
         )
-    missing = set(symbols) - set(data)
+    missing = sorted(s.replace(".NS", "") for s in set(symbols) - set(data))
     if missing:
-        print(f"[warn] no data for: {', '.join(sorted(s.replace('.NS', '') for s in missing))}", file=sys.stderr)
+        shown = ", ".join(missing[:15]) + (f" ... (+{len(missing) - 15} more)" if len(missing) > 15 else "")
+        print(f"[warn] no data for {len(missing)} symbols: {shown}", file=sys.stderr)
     return pd.DataFrame(rows)
 
 
@@ -188,8 +212,11 @@ def main():
                    help="1m, 5m, 15m, 1h or 1d (prompted if omitted)")
     p.add_argument("-s", "--signal", choices=SIGNALS, action="append",
                    help="only show these signals (repeatable). Default: show any signal")
+    p.add_argument("--universe", default=None,
+                   help="NSE index list to scan, e.g. 'Nifty 500', 'Nifty 200', 'Nifty 100', 'Nifty 50' "
+                        "(default: nifty50.txt). 'Nifty 500' = top 500 by market cap")
     p.add_argument("--symbols", type=Path, default=DEFAULT_SYMBOL_FILE,
-                   help="text file with one symbol per line (default: nifty50.txt)")
+                   help="text file with one symbol per line (used when --universe is not given)")
     p.add_argument("--source", choices=["yahoo", "dhan"], default="yahoo",
                    help="data feed. 'dhan' reads DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN from environment variables")
     p.add_argument("--include-forming", action="store_true",
@@ -204,7 +231,16 @@ def main():
         if tf not in TIMEFRAMES:
             sys.exit(f"Invalid timeframe: {tf}")
 
-    symbols = load_symbols(args.symbols)
+    if args.universe:
+        import universe
+        match = [k for k in universe.UNIVERSES if k.lower().startswith(args.universe.lower())]
+        if not match:
+            sys.exit(f"Unknown universe. Choose from: {', '.join(universe.UNIVERSES)}")
+        names, note = universe.load(match[0])
+        print(f"Universe: {match[0]} ({len(names)} stocks, {note})")
+        symbols = [n + ".NS" for n in names]
+    else:
+        symbols = load_symbols(args.symbols)
     print(f"[{args.source}] Scanning {len(symbols)} symbols on {tf} | BB(EMA {EMA_LEN}, {STD_MULT} SD) ...")
     res = scan(symbols, tf, args.include_forming, source=args.source)
     if res.empty:
