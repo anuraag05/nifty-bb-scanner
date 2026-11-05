@@ -12,7 +12,7 @@ indicator("Tiger TTL", overlay=true)
 lengthLR = input.int(9, minval=1, title="RL")
 lengthLM = input.int(5, minval=1, title="EL")
 
-lengthstop = input.int(3, minval=1, title="LS")
+lengthstop = input.int(4, minval=1, title="LS")
 
 lr = ta.rsi(close, lengthLR)
 lm = ta.ema(lr, lengthLM)

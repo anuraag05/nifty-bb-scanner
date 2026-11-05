@@ -5,7 +5,7 @@ Logic, bar by bar (identical to the Pine state machine):
     lr   = RSI(close, 9)                      (Wilder / RMA, like ta.rsi)
     lm   = EMA(lr, 5)
     buy  = lr > lm          sell = lr < lm
-    buystop  = lowest(low, 3)   sellstop = highest(high, 3)   (current bar included)
+    buystop  = lowest(low, 4)   sellstop = highest(high, 4)   (current bar included)
 
     position  0 flat / 1 BUY / -1 SELL
     BUY open : stop ratchets up  (max of old stop and buystop); close < stop  -> BUY STOP HIT, flat
@@ -24,7 +24,7 @@ import pandas as pd
 
 RSI_LEN = 9
 RSI_EMA_LEN = 5
-STOP_LEN = 3
+STOP_LEN = 4
 
 
 def _rma(x: np.ndarray, n: int) -> np.ndarray:

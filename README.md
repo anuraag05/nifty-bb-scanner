@@ -19,7 +19,7 @@ Pick the data source, scan type, timeframe and signals in the sidebar, then clic
 | Scan | What it finds |
 |---|---|
 | **Bollinger Bands** | 20 EMA midline, ±1 SD bands: breakouts / breakdowns / EMA crosses |
-| **TTL (RSI / EMA trailing stop)** | Your TradingView "Tiger TTL" script: RSI(9) vs its EMA(5) gives BUY/SELL, with a 3-bar trailing stop. Signals: `buy_entry`, `sell_entry`, `buy_stop_hit`, `sell_stop_hit` |
+| **TTL (RSI / EMA trailing stop)** | Your TradingView "Tiger TTL" script: RSI(9) vs its EMA(5) gives BUY/SELL, with a 4-bar trailing stop. Signals: `buy_entry`, `sell_entry`, `buy_stop_hit`, `sell_stop_hit` |
 | **BB + TTL combo** | `combo_buy` = TTL **buy entry** on a candle that closed **above the BB upper band**; `combo_sell` = TTL **sell entry** on a candle that closed **below the BB lower band** |
 
 "Signal within last N candles" (default 1 = the latest closed candle) also catches signals from the last few candles; the `bars_ago` column says how old each one is.
