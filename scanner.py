@@ -213,7 +213,7 @@ def main():
     p.add_argument("-s", "--signal", choices=SIGNALS, action="append",
                    help="only show these signals (repeatable). Default: show any signal")
     p.add_argument("--universe", default=None,
-                   help="NSE index list to scan, e.g. 'Nifty 500', 'Nifty 200', 'Nifty 100', 'Nifty 50' "
+                   help="NSE index list to scan, e.g. 'Nifty 500', 'Nifty 200', 'Nifty 100', 'Nifty 50', 'F&O' "
                         "(default: nifty50.txt). 'Nifty 500' = top 500 by market cap")
     p.add_argument("--symbols", type=Path, default=DEFAULT_SYMBOL_FILE,
                    help="text file with one symbol per line (used when --universe is not given)")

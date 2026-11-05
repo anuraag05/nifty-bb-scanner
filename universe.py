@@ -30,7 +30,11 @@ UNIVERSES = {
     "Nifty 50": "ind_nifty50list.csv",
     "Nifty Midcap 150": "ind_niftymidcap150list.csv",
     "Nifty Smallcap 250": "ind_niftysmallcap250list.csv",
+    "F&O stocks (all stocks with futures & options)": "fo_mktlots.csv",
 }
+FNO = "F&O stocks (all stocks with futures & options)"
+URLS = {FNO: "https://nsearchives.nseindia.com/content/fo/fo_mktlots.csv"}  # everything else lives under BASE
+INDEX_UNDERLYINGS = {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50"}
 DEFAULT = "Nifty 200 (top 200 by market cap)"
 
 HEADERS = {
@@ -63,22 +67,55 @@ def parse_symbols(text: str) -> list[str]:
     return out
 
 
+def parse_fo_lots(text: str) -> list[str]:
+    """NSE's F&O lot-size file: 'UNDERLYING, SYMBOL, <month>, <month>, ...' with an index section first and an
+    'Individual Securities' (stocks) section after it. Returns only the stock symbols."""
+    import csv
+    rows = list(csv.reader(io.StringIO(text)))
+    has_marker = any("individual securities" in ",".join(r).lower() for r in rows)
+    started = not has_marker
+    out, seen = [], set()
+    for r in rows:
+        line = ",".join(r).lower()
+        if "individual securities" in line:
+            started = True
+            continue
+        if has_marker and "derivatives on" in line and "individual" not in line:
+            started = False
+            continue
+        if not started or len(r) < 3:
+            continue
+        sym = r[1].strip().upper()
+        if not sym or sym == "SYMBOL" or sym in INDEX_UNDERLYINGS or sym in seen:
+            continue
+        if not any(c.strip().replace(".", "").isdigit() for c in r[2:]):  # needs a lot size
+            continue
+        seen.add(sym)
+        out.append(sym)
+    return out
+
+
+def _parse(name: str, text: str) -> list[str]:
+    return parse_fo_lots(text) if name == FNO else parse_symbols(text)
+
+
 def load(name: str) -> tuple[list[str], str]:
     """Return (symbols without .NS, note about where they came from)."""
     fname = UNIVERSES[name]
     cache = CACHE_DIR / fname
     bundled = BUNDLED_DIR / fname
 
+    min_size = 20 if name != FNO else 100
     fresh = cache.exists() and (time.time() - cache.stat().st_mtime) < 24 * 3600
     if fresh:
-        return parse_symbols(cache.read_text()), "cached NSE list (<24 h old)"
+        return _parse(name, cache.read_text()), "cached NSE list (<24 h old)"
 
     err = None
     try:
-        r = requests.get(BASE + fname, headers=HEADERS, timeout=25)
+        r = requests.get(URLS.get(name, BASE + fname), headers=HEADERS, timeout=25)
         r.raise_for_status()
-        syms = parse_symbols(r.text)
-        if len(syms) >= 20:
+        syms = _parse(name, r.text)
+        if len(syms) >= min_size:
             try:
                 CACHE_DIR.mkdir(exist_ok=True)
                 cache.write_text(r.text)
@@ -89,9 +126,17 @@ def load(name: str) -> tuple[list[str], str]:
         err = e
 
     if cache.exists():
-        return parse_symbols(cache.read_text()), "older cached NSE list (live download failed)"
+        return _parse(name, cache.read_text()), "older cached NSE list (live download failed)"
+    if name == FNO:  # NSE blocked -> derive the F&O list from Dhan's public instrument master
+        try:
+            import dhan_feed
+            syms = dhan_feed.fno_underlyings()
+            if len(syms) >= min_size:
+                return syms, "derived from Dhan's stock-futures list (NSE download failed)"
+        except Exception as e2:
+            err = f"{err}; Dhan fallback: {e2}"
     if bundled.exists():
-        return parse_symbols(bundled.read_text()), "bundled list in ./universes"
+        return _parse(name, bundled.read_text()), "bundled list in ./universes"
     if name == "Nifty 50":
         return parse_symbols((HERE / "nifty50.txt").read_text()), "bundled nifty50.txt"
     raise RuntimeError(

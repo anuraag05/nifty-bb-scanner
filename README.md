@@ -32,10 +32,11 @@ If a refresh fails (for example your Dhan token expired) it keeps showing the la
 Keep the browser tab open - the refresh runs while the page is open.
 
 ### Which stocks
-The **Stocks to scan** dropdown offers Nifty 200 (default), 500, 100, 50, Midcap 150 and Smallcap 250,
+The **Stocks to scan** dropdown offers Nifty 200 (default), 500, 100, 50, Midcap 150, Smallcap 250 and **F&O stocks** (every stock with futures & options),
 downloaded live from NSE (cached 24 h). Choose **Upload CSV** (needs a `Symbol` column) or **Custom list** for your own set,
 for example a list ranked exactly the way you want from a screener.
-If NSE blocks the download, save the CSV as `universes/ind_nifty500list.csv` and it will be used as a fallback.
+The F&O list comes from NSE's lot-size file; if NSE blocks it, the app derives the list from the stock futures in Dhan's public instrument list.
+For the other lists, if NSE blocks the download, save the CSV as `universes/ind_nifty500list.csv` and it will be used as a fallback.
 
 Scan time: Dhan allows about 5 requests/second, so 200 stocks take roughly 40 seconds (500 stocks about 2 minutes) on the first scan
 (a progress bar shows it). Repeat scans within the cache window (1 to 30 min depending on timeframe) are instant.
@@ -59,6 +60,7 @@ pip install -r requirements.txt
 ```bash
 python scanner.py -t 15m                          # any signal, 15-minute candles (Nifty 50 file)
 python scanner.py -t 15m --universe "Nifty 200"   # top 200 by market cap
+python scanner.py -t 15m --universe "F&O"         # all F&O stocks (quote it in the terminal)
 python scanner.py -t 1d -s cross_above_upper      # daily breakouts only
 python scanner.py -t 5m -s below_lower -s cross_below_lower
 python scanner.py -t 1h --all --csv out.csv       # every stock, save CSV
@@ -69,7 +71,7 @@ python scanner.py                                 # prompts for timeframe
 |---|---|
 | `-t, --timeframe` | `1m`, `5m`, `15m`, `1h`, `1d` |
 | `-s, --signal` | Filter (repeatable). See signals below |
-| `--universe` | `Nifty 500`, `Nifty 200`, `Nifty 100`, `Nifty 50`, ... (downloads the NSE list) |
+| `--universe` | `Nifty 500`, `Nifty 200`, `Nifty 100`, `Nifty 50`, `F&O`, ... (downloads the NSE list) |
 | `--source` | `yahoo` (default) or `dhan` |
 | `--symbols FILE` | Custom symbol list (one per line; `.NS` added automatically) |
 | `--include-forming` | Include the still-open candle (default: closed candles only) |

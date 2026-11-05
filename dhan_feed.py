@@ -55,19 +55,40 @@ def _headers(token: str, client_id: str) -> dict:
     }
 
 
-def load_security_ids(symbols: list[str]) -> dict[str, str]:
-    """Map NSE trading symbols (no .NS) -> Dhan securityId using Dhan's public instrument master."""
+def _master_text() -> str:
+    """Dhan's public instrument master (cached for 24 h)."""
     fresh = SCRIP_CACHE.exists() and (time.time() - SCRIP_CACHE.stat().st_mtime) < 24 * 3600
     if fresh:
-        text = SCRIP_CACHE.read_text()
-    else:
-        r = requests.get(SCRIP_MASTER_URL, timeout=60)
-        r.raise_for_status()
-        text = r.text
-        try:
-            SCRIP_CACHE.write_text(text)
-        except OSError:
-            pass  # read-only filesystem (some hosts) - just don't cache
+        return SCRIP_CACHE.read_text()
+    r = requests.get(SCRIP_MASTER_URL, timeout=60)
+    r.raise_for_status()
+    text = r.text
+    try:
+        SCRIP_CACHE.write_text(text)
+    except OSError:
+        pass  # read-only filesystem (some hosts) - just don't cache
+    return text
+
+
+def fno_underlyings() -> list[str]:
+    """NSE stocks that have futures (i.e. the F&O stock list), derived from stock-futures rows
+    in Dhan's instrument master. Trading symbols look like 'RELIANCE-Nov2026-FUT'."""
+    import re
+    df = pd.read_csv(io.StringIO(_master_text()), low_memory=False)
+    df = df[(df["SEM_EXM_EXCH_ID"] == "NSE") & (df["SEM_SEGMENT"] == "D") & (df["SEM_INSTRUMENT_NAME"] == "FUTSTK")]
+    pat = re.compile(r"^(.+?)-[A-Za-z]{3}\d{4}-FUT$")
+    out, seen = [], set()
+    for ts in df["SEM_TRADING_SYMBOL"].dropna().astype(str):
+        m = pat.match(ts.strip())
+        if m and m.group(1).upper() not in seen:
+            seen.add(m.group(1).upper())
+            out.append(m.group(1).upper())
+    return sorted(out)
+
+
+def load_security_ids(symbols: list[str]) -> dict[str, str]:
+    """Map NSE trading symbols (no .NS) -> Dhan securityId using Dhan's public instrument master."""
+    text = _master_text()
 
     df = pd.read_csv(io.StringIO(text), low_memory=False)
     id_col = next((c for c in df.columns if "SECURITY_ID" in c.upper()), None)
