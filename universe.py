@@ -1,9 +1,10 @@
 """
 Stock universes (which stocks to scan).
 
-"Nifty 500" is NSE's official list of the top 500 listed companies ranked by full
-market capitalisation (averaged over six months, from NSE's eligible stocks), so it
-is the standard "top 500 by market cap" list. It is reconstituted twice a year.
+"Nifty 200" / "Nifty 500" are NSE's official lists of the top 200 / top 500 listed
+companies ranked by full market capitalisation (averaged over six months, from NSE's
+eligible stocks), so they are the standard "top N by market cap" lists. They are
+reconstituted twice a year.
 
 Lists are downloaded live from NSE's public archive, cached for 24 h, and fall back
 to the last cached copy or a file you place in ./universes/<name>.csv.
@@ -23,14 +24,14 @@ BUNDLED_DIR = HERE / "universes"
 BASE = "https://nsearchives.nseindia.com/content/indices/"
 
 UNIVERSES = {
+    "Nifty 200 (top 200 by market cap)": "ind_nifty200list.csv",
     "Nifty 500 (top 500 by market cap)": "ind_nifty500list.csv",
-    "Nifty 200": "ind_nifty200list.csv",
     "Nifty 100": "ind_nifty100list.csv",
     "Nifty 50": "ind_nifty50list.csv",
     "Nifty Midcap 150": "ind_niftymidcap150list.csv",
     "Nifty Smallcap 250": "ind_niftysmallcap250list.csv",
 }
-DEFAULT = "Nifty 500 (top 500 by market cap)"
+DEFAULT = "Nifty 200 (top 200 by market cap)"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "

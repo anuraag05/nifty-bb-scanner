@@ -11,7 +11,7 @@ Usage examples:
     python scanner.py -t 1d --signal cross_above_upper
     python scanner.py -t 5m --symbols my_list.txt --csv out.csv
     python scanner.py -t 1h --include-forming
-    python scanner.py -t 15m --universe "Nifty 500"   (top 500 by market cap)
+    python scanner.py -t 15m --universe "Nifty 200"   (top 200 by market cap)
     python scanner.py -t 5m --source dhan      (needs DHAN_CLIENT_ID / DHAN_ACCESS_TOKEN env vars)
 """
 

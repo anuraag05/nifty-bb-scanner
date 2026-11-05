@@ -5,6 +5,10 @@ Run locally:   streamlit run app.py
 Host free:     https://share.streamlit.io  (point it at this repo, main file: app.py)
 """
 
+import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -56,6 +60,32 @@ def secret(name: str) -> str:
     return os.environ.get(name, "")
 
 
+IST = ZoneInfo("Asia/Kolkata")
+
+
+def market_open() -> bool:
+    """NSE cash market hours: Mon-Fri 09:15-15:30 IST (holidays are not checked)."""
+    now = datetime.now(IST)
+    return now.weekday() < 5 and (9, 15) <= (now.hour, now.minute) <= (15, 30)
+
+
+@st.fragment(run_every="10s")
+def refresh_timer(enabled: bool, minutes: int, only_market_hours: bool):
+    """Counts down in the sidebar and triggers a full re-scan when the interval has passed."""
+    if not enabled or "last_scan" not in st.session_state:
+        return
+    if st.session_state.get("auto_due"):
+        return  # a refresh is already queued; the main script will run it (avoids a rerun loop)
+    if only_market_hours and not market_open():
+        st.caption("⏸ Market closed - auto-refresh paused")
+        return
+    left = st.session_state["last_scan"] + minutes * 60 - time.time()
+    if left <= 0:
+        st.session_state["auto_due"] = True
+        st.rerun()  # reruns the whole app, which performs the scan
+    st.caption(f"⏱ Next auto-refresh in {int(left // 60)}:{int(left % 60):02d}")
+
+
 # ------------------------------------------------------------------ sidebar
 st.title("📈 Nifty Bollinger Band Scanner")
 st.caption(f"Bollinger Bands: {scanner.EMA_LEN} EMA midline, ±{scanner.STD_MULT:g} standard deviation · data: Dhan or Yahoo Finance")
@@ -80,7 +110,7 @@ with st.sidebar:
     include_forming = st.checkbox("Include forming (unclosed) candle", value=False)
     uni_names = list(universe.UNIVERSES) + ["Upload CSV", "Custom list"]
     uni = st.selectbox("Stocks to scan", uni_names, index=0,
-                       help="Nifty 500 = NSE's official top 500 listed companies by market cap.")
+                       help="Nifty 200 / Nifty 500 = NSE's official top 200 / top 500 listed companies by market cap.")
     custom_syms: list[str] = []
     if uni == "Upload CSV":
         up = st.file_uploader("CSV with a 'Symbol' column (or one symbol per line)", type=["csv", "txt"])
@@ -89,7 +119,16 @@ with st.sidebar:
     elif uni == "Custom list":
         txt = st.text_area("Symbols (one per line)", value="RELIANCE\nTCS\nINFY", height=160)
         custom_syms = universe.parse_symbols(txt)
-    run = st.button("🔍 Scan", type="primary", width="stretch")
+    clicked = st.button("🔍 Scan", type="primary", width="stretch")
+    st.divider()
+    auto = st.checkbox("Auto-refresh", value=True, help="Re-scans automatically using the settings above.")
+    every = st.selectbox("Refresh every", [1, 2, 5, 10, 15], index=2, format_func=lambda m: f"{m} min",
+                         disabled=not auto)
+    mkt_only = st.checkbox("Only during market hours (9:15-15:30 IST, Mon-Fri)", value=True, disabled=not auto)
+    refresh_timer(auto, every, mkt_only)
+
+# an auto-refresh tick only counts if a scan has already been done
+run = clicked or st.session_state.pop("auto_due", False)
 
 if "result" not in st.session_state and not run:
     st.info("Choose a timeframe in the sidebar and click **Scan**.")
@@ -119,15 +158,23 @@ if run:
     def on_progress(done: int, total: int):
         bar.progress(min(done / total, 1.0), text=f"Fetching {source.capitalize()} data: {done}/{total}")
 
+    failed = False
     try:
         data = get_data(symbols, tf, source, client_id, token, on_progress)
     except Exception as e:  # bad/expired token, network problems, etc.
         bar.empty()
-        st.error(f"Data fetch failed: {e}")
-        st.stop()
+        if "result" in st.session_state:  # keep showing the last good scan
+            st.warning(f"Refresh failed ({e}). Showing the previous scan; will retry.")
+            failed = True
+        else:
+            st.error(f"Data fetch failed: {e}")
+            st.stop()
     bar.empty()
-    res = scanner.scan(symbols, tf, include_forming, data=data)
-    st.session_state["result"] = (res, data, tf, signals, show_all, symbols)
+    st.session_state["last_scan"] = time.time()  # also on failure, so retries are spaced out
+    if not failed:
+        res = scanner.scan(symbols, tf, include_forming, data=data)
+        st.session_state["result"] = (res, data, tf, signals, show_all, symbols)
+        st.session_state["scan_time"] = datetime.now(IST).strftime("%d %b %H:%M:%S IST")
 
 res, data, tf_used, signals_used, show_all_used, symbols_used = st.session_state["result"]
 
@@ -136,7 +183,7 @@ if res.empty:
              "or the symbols are invalid. Try again in a minute or use the 1d timeframe.")
     st.stop()
 
-st.caption(st.session_state.get("universe_note", ""))
+st.caption(f"{st.session_state.get('universe_note', '')} · last scan {st.session_state.get('scan_time', '-')}")
 missing = [s.replace(".NS", "") for s in symbols_used if s not in data]
 if missing:
     with st.expander(f"⚠️ No data for {len(missing)} symbols"):
