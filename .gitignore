@@ -4,3 +4,6 @@ __pycache__/
 venv/
 *.csv
 .DS_Store
+.env
+.streamlit/secrets.toml
+.dhan_scrip_master.csv

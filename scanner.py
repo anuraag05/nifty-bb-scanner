@@ -11,6 +11,7 @@ Usage examples:
     python scanner.py -t 1d --signal cross_above_upper
     python scanner.py -t 5m --symbols my_list.txt --csv out.csv
     python scanner.py -t 1h --include-forming
+    python scanner.py -t 5m --source dhan      (needs DHAN_CLIENT_ID / DHAN_ACCESS_TOKEN env vars)
 """
 
 import argparse
@@ -111,7 +112,16 @@ def drop_forming_bar(df: pd.DataFrame, bar_len: timedelta, tf: str) -> pd.DataFr
     return df
 
 
-def download(symbols: list[str], tf: str) -> dict[str, pd.DataFrame]:
+def download(symbols: list[str], tf: str, source: str = "yahoo",
+             client_id: str = "", token: str = "") -> dict[str, pd.DataFrame]:
+    """Fetch OHLC data from the chosen source ('yahoo' or 'dhan')."""
+    if source == "dhan":
+        import dhan_feed
+        return dhan_feed.download(symbols, tf, client_id=client_id, token=token)
+    return download_yahoo(symbols, tf)
+
+
+def download_yahoo(symbols: list[str], tf: str) -> dict[str, pd.DataFrame]:
     interval, period, _ = TIMEFRAMES[tf]
     raw = yf.download(
         tickers=symbols,
@@ -136,9 +146,11 @@ def download(symbols: list[str], tf: str) -> dict[str, pd.DataFrame]:
     return out
 
 
-def scan(symbols: list[str], tf: str, include_forming: bool) -> pd.DataFrame:
+def scan(symbols: list[str], tf: str, include_forming: bool, data: dict | None = None,
+         source: str = "yahoo", client_id: str = "", token: str = "") -> pd.DataFrame:
     _, _, bar_len = TIMEFRAMES[tf]
-    data = download(symbols, tf)
+    if data is None:
+        data = download(symbols, tf, source, client_id, token)
     rows = []
     for sym, df in data.items():
         if "Close" not in df.columns:
@@ -178,6 +190,8 @@ def main():
                    help="only show these signals (repeatable). Default: show any signal")
     p.add_argument("--symbols", type=Path, default=DEFAULT_SYMBOL_FILE,
                    help="text file with one symbol per line (default: nifty50.txt)")
+    p.add_argument("--source", choices=["yahoo", "dhan"], default="yahoo",
+                   help="data feed. 'dhan' reads DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN from environment variables")
     p.add_argument("--include-forming", action="store_true",
                    help="include the currently forming (unclosed) candle")
     p.add_argument("--all", action="store_true", help="show every stock, even without a signal")
@@ -191,8 +205,8 @@ def main():
             sys.exit(f"Invalid timeframe: {tf}")
 
     symbols = load_symbols(args.symbols)
-    print(f"Scanning {len(symbols)} symbols on {tf} | BB(EMA {EMA_LEN}, {STD_MULT} SD) ...")
-    res = scan(symbols, tf, args.include_forming)
+    print(f"[{args.source}] Scanning {len(symbols)} symbols on {tf} | BB(EMA {EMA_LEN}, {STD_MULT} SD) ...")
+    res = scan(symbols, tf, args.include_forming, source=args.source)
     if res.empty:
         sys.exit("No data returned (market closed / rate limited / bad symbols?).")
 
