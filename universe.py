@@ -67,6 +67,17 @@ def parse_symbols(text: str) -> list[str]:
     return out
 
 
+def find(name: str) -> str | None:
+    """Resolve a user-typed universe name ('Nifty 200', 'f&o', 'Nifty 50') to a key of UNIVERSES.
+    Exact match first, then 'name' followed by a space (so 'Nifty 50' never matches 'Nifty 500 ...')."""
+    n = name.strip().lower()
+    for k in UNIVERSES:
+        if k.lower() == n:
+            return k
+    hits = [k for k in UNIVERSES if k.lower().startswith(n) and k.lower()[len(n):len(n) + 1] == " "]
+    return hits[0] if len(hits) == 1 else None  # ambiguous ('nifty') -> None
+
+
 def parse_fo_lots(text: str) -> list[str]:
     """NSE's F&O lot-size file: 'UNDERLYING, SYMBOL, <month>, <month>, ...' with an index section first and an
     'Individual Securities' (stocks) section after it. Returns only the stock symbols."""

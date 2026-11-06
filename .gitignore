@@ -8,3 +8,7 @@ venv/
 .streamlit/secrets.toml
 .dhan_scrip_master.csv
 .universe_cache/
+bot_state_*.json
+bot_config.json
+STOP
+bot.log

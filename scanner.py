@@ -316,7 +316,7 @@ def main():
 
     if args.universe:
         import universe
-        match = [k for k in universe.UNIVERSES if k.lower().startswith(args.universe.lower())]
+        match = [universe.find(args.universe)] if universe.find(args.universe) else []
         if not match:
             sys.exit(f"Unknown universe. Choose from: {', '.join(universe.UNIVERSES)}")
         names, note = universe.load(match[0])

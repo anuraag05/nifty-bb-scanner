@@ -111,3 +111,39 @@ python scanner.py                                 # prompts for timeframe
 - Yahoo data is free and can be delayed or rate limited; it's fine for scanning, not for execution.
 - Index lists are reconstituted by NSE twice a year; the app always pulls the current one.
 - Educational tool, not investment advice.
+
+## Trading bot (`bot.py`) - paper trading by default
+
+An unattended bot that trades the **BB + TTL combo** on NSE cash equities through Dhan:
+
+| | Rule |
+|---|---|
+| **BUY** | TTL buy entry on a candle that closes above the BB upper band |
+| **SELL (short)** | TTL sell entry on a candle that closes below the BB lower band |
+| **Exit** | TTL 4-candle trailing stop hit (close beyond the trailing low/high), or square-off at 15:15 |
+| **Size** | `min(risk_per_trade / stop distance, capital_per_trade / price)`; skips stops wider than `max_stop_pct` |
+| **Limits** | `max_open_positions`, `max_daily_loss` (flattens and halts), entries only 09:30-14:45, one trade per signal candle, only signals from a just-closed candle |
+| **Orders** | Dhan MARKET, product `INTRADAY` (MIS), exchange `NSE_EQ` |
+
+```bash
+cp bot_config.example.json bot_config.json      # edit your limits
+export DHAN_CLIENT_ID=...  DHAN_ACCESS_TOKEN=...   # Windows: set DHAN_CLIENT_ID=...
+python bot.py                  # PAPER: simulated fills, no orders. Start here.
+python bot.py --live           # REAL orders (asks you to type LIVE)
+python bot.py --once --ignore-age   # paper: one cycle on the latest closed candle, then exit
+```
+It wakes at each candle close, fetches data, manages stops, takes new signals, and exits itself after square-off.
+Trades are logged to `trades_paper.csv` / `trades_live.csv`; state is in `bot_state_<mode>.json` (survives restarts; sent orders are
+reconciled by correlation id after a crash). Create a file named `STOP` next to `bot.py` to flatten everything and exit.
+
+**Before going live**
+- **Static IP:** Dhan only accepts order placement from a whitelisted static IP, so live mode must run on a machine with a fixed IP
+  (a small cloud server, or home internet with a static IP) - not on Streamlit Cloud. Paper mode needs no IP.
+- Run paper for several sessions first and compare it with what you expect. The strategy has **not been backtested** here.
+- The live order code was written from Dhan's docs and tested only against a mock. Start with tiny limits (e.g. `risk_per_trade: 100`).
+- Brokerage, taxes and slippage are not modelled in P&L (paper fills use 0.05% slippage). Shorting is intraday only.
+- Dhan tokens expire after 24 h: set a fresh `DHAN_ACCESS_TOKEN` each morning.
+- Algo trading is subject to exchange/SEBI and broker rules (e.g. order-rate limits, registration thresholds) - check Dhan's terms.
+- Scanning 200 stocks takes ~40 s per cycle on Dhan, fine for 15m/1h; use a shorter list for 5m or less.
+
+Tests: `python tests/test_bot_sim.py` (offline: replays a simulated market through the bot and cross-checks every exit against the TTL logic).

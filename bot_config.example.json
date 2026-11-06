@@ -1,0 +1,15 @@
+{
+  "timeframe": "15m",
+  "universe": "Nifty 200",
+  "source": "dhan",
+  "allow_long": true,
+  "allow_short": true,
+  "risk_per_trade": 500,
+  "capital_per_trade": 20000,
+  "max_stop_pct": 3.0,
+  "max_open_positions": 5,
+  "max_daily_loss": 2000,
+  "first_entry_time": "09:30",
+  "no_new_entries_after": "14:45",
+  "square_off_time": "15:15"
+}
